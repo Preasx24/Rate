@@ -1,62 +1,82 @@
-name: Update Gist Rate Stats
+name: GitHub Token Rate Tracker
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '*/2 * * * *' # Every 2 minutes
 
 jobs:
-  update:
+  track-rates:
     runs-on: ubuntu-latest
     env:
-      GIST_ID: baaadec8c55a20705b958950ae630b9f
+      GIST_ID: b3ad84ac92321f595b33d4b350938ffa
       GIST_FILENAME: rate.json
       TOKENS_URL: https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt
       OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/e3395dee3d0e94f0dfcfcda01503f7ff2c9f88bf/gistfile1.txt
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Download token
-        run: |
-          TOKEN=$(curl -s $TOKENS_URL | head -n 1)
-          echo "GITHUB_TOKEN=$TOKEN" >> $GITHUB_ENV
+    - name: Install jq
+      run: sudo apt-get install -y jq
 
-      - name: Download old data
-        run: |
-          echo "Downloading old_data.json from $OLD_DATA_RAW_URL"
-          set +e
-          curl -s $OLD_DATA_RAW_URL -o old_data.json
-          CURL_EXIT=$?
-          set -e
+    - name: Download old_data.json from $OLD_DATA_RAW_URL
+      run: |
+        set +e
+        curl -s "$OLD_DATA_RAW_URL" -o old_data.json
+        CURL_EXIT=$?
+        set -e
 
-          if [ $CURL_EXIT -ne 0 ]; then
-            echo "⚠️ curl exited with $CURL_EXIT"
-            echo "[]" > old_data.json
-          fi
+        if [ $CURL_EXIT -ne 0 ]; then
+          echo "⚠️ curl exited with $CURL_EXIT"
+          echo "[]" > old_data.json
+        fi
 
-          if [ ! -s old_data.json ]; then
-            echo "old_data.json empty, initializing with []"
-            echo "[]" > old_data.json
+        if [ ! -s old_data.json ]; then
+          echo "old_data.json empty, initializing with []"
+          echo "[]" > old_data.json
+        else
+          echo "✅ old_data.json downloaded"
+        fi
+
+    - name: Download Tokens List
+      run: |
+        curl -s "$TOKENS_URL" -o tokens.txt
+        echo "Found $(wc -l < tokens.txt) tokens"
+
+    - name: Query Rate Limits
+      run: |
+        echo "[" > new_entries.json
+        first=1
+        while IFS= read -r token; do
+          result=$(curl -s -H "Authorization: token $token" https://api.github.com/rate_limit)
+          remaining=$(echo "$result" | jq '.rate.remaining')
+          limit=$(echo "$result" | jq '.rate.limit')
+          timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          entry="{\"token\":\"${token:0:8}****\",\"remaining\":$remaining,\"limit\":$limit,\"timestamp\":\"$timestamp\"}"
+          
+          if [ $first -eq 1 ]; then
+            echo "$entry" >> new_entries.json
+            first=0
           else
-            echo "old_data.json downloaded successfully:"
-            head -c 200 old_data.json
+            echo ",$entry" >> new_entries.json
           fi
+        done < tokens.txt
+        echo "]" >> new_entries.json
 
-      - name: Create new data entry
-        run: |
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          echo "[{\"time\": \"$TIMESTAMP\", \"status\": \"OK\"}]" > new_entries.json
+    - name: Combine old and new data
+      run: |
+        jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
-      - name: Merge with old data
-        run: |
-          jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
+    - name: Update Gist file with new data
+      run: |
+        UPDATE_PAYLOAD=$(jq -n \
+          --arg filename "$GIST_FILENAME" \
+          --arg content "$(cat combined.json)" \
+          '{files: {($filename): {content: $content}}}')
 
-      - name: Upload to Gist
-        run: |
-          UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
-            '{files: {($filename): {content: $content}}}')
-
-          curl -s -X PATCH \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -d "$UPDATE_PAYLOAD" \
-            https://api.github.com/gists/$GIST_ID
+        curl -s -X PATCH \
+          -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
+          -d "$UPDATE_PAYLOAD" \
+          https://api.github.com/gists/$GIST_ID
