@@ -26,7 +26,7 @@ jobs:
 
       - name: 📥 Download Existing rate.json Gist Content
         run: |
-          curl -s -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+          curl -s -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
             https://api.github.com/gists/${{ env.GIST_ID }} \
             | jq -r ".files[\"${{ env.GIST_FILENAME }}\"].content" > old_data.json
 
