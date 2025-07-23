@@ -15,7 +15,7 @@ jobs:
           echo "GIST_ID=b3ad84ac92321f595b33d4b350938ffa" >> $GITHUB_ENV
           echo "GIST_FILENAME=rate.json" >> $GITHUB_ENV
           echo "TOKENS_URL=https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt" >> $GITHUB_ENV
-          echo "OLD_DATA_RAW_URL=https://gist.githubusercontent.com/Preasx24/465a9bcaff40443a4c6b0572b7d5e99c/raw/8afd7e8edf7eb498f884134de6a891c644b3c61e/rate.json" >> $GITHUB_ENV
+          echo "OLD_DATA_RAW_URL=https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/e3395dee3d0e94f0dfcfcda01503f7ff2c9f88bf/gistfile1.txt" >> $GITHUB_ENV
 
       - name: 🧪 Install jq
         run: sudo apt-get install -y jq
