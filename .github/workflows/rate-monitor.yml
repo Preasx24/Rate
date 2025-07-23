@@ -1,38 +1,50 @@
-name: GitHub Token Rate Tracker
+name: 🔄 GitHub Token Rate Tracker
 
 on:
   schedule:
-    - cron: "*/2 * * * *"  # Every 2 minutes (minimum GitHub Actions supports)
+    - cron: "*/2 * * * *"  # Every 2 minutes
   workflow_dispatch:
 
 jobs:
-  track-rate:
+  update-gist:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (not strictly needed)
-        uses: actions/checkout@v3
-
-      - name: Install jq
-        run: sudo apt-get install jq
-
-      - name: Fetch Token List from Shared Gist
+      - name: 🔐 Set up token & raw URLs
         run: |
-          curl -s https://gist.githubusercontent.com/Preasx24/465a9bcaff40443a4c6b0572b7d5e99c/raw/8afd7e8edf7eb498f884134de6a891c644b3c61e/gistfile1.txt > tokens.txt
-          cat tokens.txt
+          echo "GIST_ID=b3ad84ac92321f595b33d4b350938ffa" >> $GITHUB_ENV
+          echo "GIST_FILENAME=rate.json" >> $GITHUB_ENV
+          echo "TOKENS_URL=https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt" >> $GITHUB_ENV
 
-      - name: Generate New Rate Info
+      - name: 🧪 Install jq
+        run: sudo apt-get install -y jq
+
+      - name: ⬇️ Fetch Tokens
+        run: |
+          curl -s $TOKENS_URL | grep ^ghp_ > tokens.txt
+          echo "✅ Found $(wc -l < tokens.txt) tokens"
+
+      - name: 📥 Download Existing rate.json Gist Content
+        run: |
+          curl -s -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            https://api.github.com/gists/${{ env.GIST_ID }} \
+            | jq -r ".files[\"${{ env.GIST_FILENAME }}\"].content" > old_data.json
+
+          [ ! -s old_data.json ] && echo "[]" > old_data.json
+
+      - name: 📊 Generate New Rate Data
         run: |
           echo "[" > new_entries.json
           FIRST=true
-          while read -r TOKEN; do
-            [[ -z "$TOKEN" ]] && continue
+
+          while IFS= read -r TOKEN; do
             RESP=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/rate_limit)
             REMAINING=$(echo "$RESP" | jq '.rate.remaining')
             LIMIT=$(echo "$RESP" | jq '.rate.limit')
             RESET=$(echo "$RESP" | jq '.rate.reset')
-            TIME=$(date -u -d @"$RESET" '+%Y-%m-%d %H:%M:%S')
-            NOW=$(date -u '+%Y-%m-%d %H:%M:%S')
+            TIME=$(date -d @"$RESET" '+%Y-%m-%d %H:%M:%S')
+            NOW=$(date '+%Y-%m-%d %H:%M:%S')
+
             ENTRY="{\"time_checked\": \"$NOW\", \"token\": \"${TOKEN:0:10}...\", \"remaining\": $REMAINING, \"limit\": $LIMIT, \"reset\": \"$TIME\"}"
 
             if [ "$FIRST" = true ]; then
@@ -44,31 +56,18 @@ jobs:
           done < tokens.txt
           echo "]" >> new_entries.json
 
-      - name: Fetch Existing Gist Data (rate.json)
+      - name: ✅ Validate JSON
         run: |
-          curl -s -H "Accept: application/vnd.github+json" \
-            https://gist.githubusercontent.com/Preasx24/465a9bcaff40443a4c6b0572b7d5e99c/raw/rate.json \
-            -o old_data.json
+          jq empty new_entries.json || { echo "❌ Invalid JSON in new_entries.json"; cat new_entries.json; exit 1; }
 
-      - name: Combine Old + New JSON
+      - name: 🔁 Merge Old + New
         run: |
           jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
-      - name: Update Gist with Combined Data
-        env:
-          GIST_ID: b3ad84ac92321f595b33d4b350938ffa   # Gist to update
+      - name: 🚀 Push Updated Gist
         run: |
-          MAIN_TOKEN=$(head -n 1 tokens.txt)
-          curl -X PATCH \
-            -H "Authorization: token $MAIN_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/gists/$GIST_ID \
-            -d @- <<EOF
-          {
-            "files": {
-              "rate.json": {
-                "content": $(jq -Rs '.' combined.json)
-              }
-            }
-          }
-EOF
+          UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
+            '{files: {($filename): {content: $content}}}')
+
+          curl -s -X PATCH -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -d "$UPDATE_PAYLOAD" https://api.github.com/gists/${{ env.GIST_ID }}
