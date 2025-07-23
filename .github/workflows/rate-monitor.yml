@@ -1,31 +1,27 @@
-name: 🔄 GitHub Token Rate Tracker
+name: Update Gist Rate Stats
 
 on:
-  schedule:
-    - cron: "*/2 * * * *"  # Every 2 minutes
   workflow_dispatch:
 
 jobs:
-  update-gist:
+  update:
     runs-on: ubuntu-latest
+    env:
+      GIST_ID: baaadec8c55a20705b958950ae630b9f
+      GIST_FILENAME: rate.json
+      TOKENS_URL: https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt
+      OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/e3395dee3d0e94f0dfcfcda01503f7ff2c9f88bf/gistfile1.txt
 
     steps:
-      - name: 🔐 Set up environment variables
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Download token
         run: |
-          echo "GIST_ID=b3ad84ac92321f595b33d4b350938ffa" >> $GITHUB_ENV
-          echo "GIST_FILENAME=rate.json" >> $GITHUB_ENV
-          echo "TOKENS_URL=https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt" >> $GITHUB_ENV
-          echo "OLD_DATA_RAW_URL=https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/e3395dee3d0e94f0dfcfcda01503f7ff2c9f88bf/gistfile1.txt" >> $GITHUB_ENV
+          TOKEN=$(curl -s $TOKENS_URL | head -n 1)
+          echo "GITHUB_TOKEN=$TOKEN" >> $GITHUB_ENV
 
-      - name: 🧪 Install jq
-        run: sudo apt-get install -y jq
-
-      - name: ⬇️ Fetch Tokens
-        run: |
-          curl -s $TOKENS_URL | grep ^ghp_ > tokens.txt
-          echo "✅ Found $(wc -l < tokens.txt) tokens"
-
-      - name: 📥 Download Existing rate.json Content (safe)
+      - name: Download old data
         run: |
           echo "Downloading old_data.json from $OLD_DATA_RAW_URL"
           set +e
@@ -42,45 +38,25 @@ jobs:
             echo "old_data.json empty, initializing with []"
             echo "[]" > old_data.json
           else
-            echo "old_data.json downloaded successfully, first 20 bytes:"
-            head -c 20 old_data.json
+            echo "old_data.json downloaded successfully:"
+            head -c 200 old_data.json
           fi
 
-      - name: 📊 Generate New Rate Data
+      - name: Create new data entry
         run: |
-          echo "[" > new_entries.json
-          FIRST=true
-          while IFS= read -r TOKEN; do
-            RESP=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/rate_limit)
-            REMAINING=$(echo "$RESP" | jq '.rate.remaining')
-            LIMIT=$(echo "$RESP" | jq '.rate.limit')
-            RESET=$(echo "$RESP" | jq '.rate.reset')
-            TIME=$(date -d @"$RESET" '+%Y-%m-%d %H:%M:%S')
-            NOW=$(date '+%Y-%m-%d %H:%M:%S')
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "[{\"time\": \"$TIMESTAMP\", \"status\": \"OK\"}]" > new_entries.json
 
-            ENTRY="{\"time_checked\": \"$NOW\", \"token\": \"${TOKEN:0:10}...\", \"remaining\": $REMAINING, \"limit\": $LIMIT, \"reset\": \"$TIME\"}"
-
-            if [ "$FIRST" = true ]; then
-              echo "  $ENTRY" >> new_entries.json
-              FIRST=false
-            else
-              echo "  ,$ENTRY" >> new_entries.json
-            fi
-          done < tokens.txt
-          echo "]" >> new_entries.json
-
-      - name: ✅ Validate JSON
-        run: |
-          jq empty new_entries.json || { echo "❌ Invalid JSON in new_entries.json"; cat new_entries.json; exit 1; }
-
-      - name: 🔁 Merge Old + New Data
+      - name: Merge with old data
         run: |
           jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
-      - name: 🚀 Push Updated Gist
+      - name: Upload to Gist
         run: |
           UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
             '{files: {($filename): {content: $content}}}')
 
-          curl -s -X PATCH -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
-            -d "$UPDATE_PAYLOAD" https://api.github.com/gists/${{ env.GIST_ID }}
+          curl -s -X PATCH \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -d "$UPDATE_PAYLOAD" \
+            https://api.github.com/gists/$GIST_ID
