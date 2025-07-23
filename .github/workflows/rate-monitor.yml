@@ -12,37 +12,53 @@ jobs:
       GIST_ID: baaadec8c55a20705b958950ae630b9f
       GIST_FILENAME: rate.json
       TOKENS_URL: https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt
-      OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/690da2cdc6ce936a1ac4e373d630e95ff0186ecb/rate.json
+      OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/rate.json
+      MAX_HISTORY_ENTRIES: 100  # Keep last 100 entries to prevent unlimited growth
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Download token list
-        run: curl -s $TOKENS_URL > tokens.txt
+        run: |
+          echo "Downloading tokens..."
+          curl -s $TOKENS_URL > tokens.txt
+          echo "Tokens downloaded ($(wc -l < tokens.txt) tokens found)"
 
       - name: Download existing rate.json
         run: |
+          echo "Downloading existing rate data..."
           set +e
           curl -s $OLD_DATA_RAW_URL -o old_data.json
           CURL_EXIT=$?
           set -e
 
-          if [ $CURL_EXIT -ne 0 ] || [ ! -s old_data.json ]; then
+          if [ $CURL_EXIT -ne 0 ] || [ ! -s old_data.json ] || ! jq -e . old_data.json >/dev/null 2>&1; then
+            echo "No valid existing data found, initializing with empty array"
             echo "[]" > old_data.json
+          else
+            echo "Successfully downloaded existing data ($(jq length old_data.json) entries)"
           fi
 
       - name: Query Rate Limits
         run: |
+          echo "Querying rate limits for each token..."
           echo "[" > new_entries.json
           first=1
+          token_count=0
+          
           while IFS= read -r token; do
             [ -z "$token" ] && continue
+            token_count=$((token_count+1))
+            short_token="${token:0:8}****"
+            
+            echo "Checking token $token_count: $short_token"
+            
             response=$(curl -s -H "Authorization: token $token" https://api.github.com/rate_limit)
             remaining=$(echo "$response" | jq '.rate.remaining')
             limit=$(echo "$response" | jq '.rate.limit')
             timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            short_token="${token:0:8}****"
+            
             entry="{\"token\": \"$short_token\", \"remaining\": $remaining, \"limit\": $limit, \"timestamp\": \"$timestamp\"}"
 
             if [ $first -eq 1 ]; then
@@ -53,15 +69,80 @@ jobs:
             fi
           done < tokens.txt
           echo "]" >> new_entries.json
+          
+          echo "Rate limits queried for $token_count tokens"
 
       - name: Combine old and new
         run: |
-          jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
+          echo "Combining old and new data..."
+          jq -s --argjson max_entries "$MAX_HISTORY_ENTRIES" '.[0] + .[1] | .[-$max_entries:]' old_data.json new_entries.json > combined.json
+          echo "Combined data has $(jq length combined.json) entries"
+
+      - name: Debug output
+        if: always()
+        run: |
+          echo "=== Debug Information ==="
+          echo "New entries:"
+          jq . new_entries.json
+          echo "Combined data:"
+          jq . combined.json | head -n 20
+          echo "... (truncated)"
+          echo "First token: $(head -n 1 tokens.txt | cut -c1-8)****"
 
       - name: Update rate.json on Gist
         run: |
+          echo "Updating gist..."
           UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
             '{files: {($filename): {content: $content}}}')
 
-          curl -s -X PATCH -H "Authorization: token $(head -n 1 tokens.txt)" \
-            -d "$UPDATE_PAYLOAD" https://api.github.com/gists/$GIST_ID
+          echo "Payload prepared"
+          
+          # Store the first token in a variable for better error messages
+          GIST_TOKEN=$(head -n 1 tokens.txt)
+          SHORT_TOKEN="${GIST_TOKEN:0:8}****"
+          
+          echo "Using token: $SHORT_TOKEN to update gist"
+          
+          # Make the API call without silent flag to see errors
+          curl -X PATCH \
+            -H "Authorization: token $GIST_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$UPDATE_PAYLOAD" \
+            "https://api.github.com/gists/$GIST_ID" \
+            -o response.json \
+            -w "\nHTTP Status: %{http_code}\n"
+          
+          # Check if the response is valid JSON
+          if ! jq -e . response.json >/dev/null 2>&1; then
+            echo "::error::Failed to update gist - invalid response"
+            echo "Response:"
+            cat response.json
+            exit 1
+          fi
+          
+          # Check for API errors in the response
+          if jq -e '.message' response.json >/dev/null 2>&1; then
+            ERROR_MESSAGE=$(jq -r '.message' response.json)
+            echo "::error::GitHub API Error: $ERROR_MESSAGE"
+            echo "Full response:"
+            cat response.json
+            exit 1
+          fi
+          
+          echo "Gist updated successfully"
+          echo "Updated URL: $(jq -r '.html_url' response.json)"
+
+      - name: Verify update
+        run: |
+          echo "Verifying update..."
+          sleep 5  # Wait a moment for the gist to propagate
+          curl -s "$OLD_DATA_RAW_URL?$(date +%s)" -o updated.json
+          
+          if [ "$(jq -c . combined.json)" != "$(jq -c . updated.json)" ]; then
+            echo "::warning::Gist content doesn't match what we tried to upload"
+            echo "Sent: $(jq length combined.json) entries"
+            echo "Received: $(jq length updated.json) entries"
+            exit 1
+          else
+            echo "Verification successful - gist content matches"
+          fi
