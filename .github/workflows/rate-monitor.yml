@@ -9,10 +9,10 @@ jobs:
   track:
     runs-on: ubuntu-latest
     env:
-      GIST_ID: b3ad84ac92321f595b33d4b350938ffa  # Target Gist ID
+      GIST_ID: baaadec8c55a20705b958950ae630b9f
       GIST_FILENAME: rate.json
       TOKENS_URL: https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt
-      OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/e3395dee3d0e94f0dfcfcda01503f7ff2c9f88bf/gistfile1.txt
+      OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/690da2cdc6ce936a1ac4e373d630e95ff0186ecb/rate.json
 
     steps:
       - name: Checkout
@@ -21,38 +21,27 @@ jobs:
       - name: Download token list
         run: curl -s $TOKENS_URL > tokens.txt
 
-      - name: Download old_data.json from $OLD_DATA_RAW_URL
+      - name: Download existing rate.json
         run: |
           set +e
           curl -s $OLD_DATA_RAW_URL -o old_data.json
           CURL_EXIT=$?
           set -e
 
-          if [ $CURL_EXIT -ne 0 ]; then
-            echo "⚠️ curl exited with $CURL_EXIT"
+          if [ $CURL_EXIT -ne 0 ] || [ ! -s old_data.json ]; then
             echo "[]" > old_data.json
           fi
 
-          if [ ! -s old_data.json ]; then
-            echo "old_data.json empty, initializing with []"
-            echo "[]" > old_data.json
-          else
-            echo "old_data.json downloaded successfully, first 20 bytes:"
-            head -c 20 old_data.json
-          fi
-
-      - name: Query Rate Limits for All Tokens
+      - name: Query Rate Limits
         run: |
           echo "[" > new_entries.json
           first=1
           while IFS= read -r token; do
             [ -z "$token" ] && continue
             response=$(curl -s -H "Authorization: token $token" https://api.github.com/rate_limit)
-
             remaining=$(echo "$response" | jq '.rate.remaining')
             limit=$(echo "$response" | jq '.rate.limit')
             timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
             short_token="${token:0:8}****"
             entry="{\"token\": \"$short_token\", \"remaining\": $remaining, \"limit\": $limit, \"timestamp\": \"$timestamp\"}"
 
@@ -65,11 +54,11 @@ jobs:
           done < tokens.txt
           echo "]" >> new_entries.json
 
-      - name: Combine Old and New Entries
+      - name: Combine old and new
         run: |
           jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
-      - name: Update Gist with Combined Data
+      - name: Update rate.json on Gist
         run: |
           UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
             '{files: {($filename): {content: $content}}}')
