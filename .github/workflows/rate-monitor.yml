@@ -1,55 +1,73 @@
-name: Append GitHub Token Rate Info to Gist
+name: 🔄 GitHub Token Rate Tracker
 
 on:
   schedule:
-    - cron: "*/1 * * * *" # Runs every minute
-  workflow_dispatch:
+    - cron: "*/1 * * * *"  # Every 1 minute
+  workflow_dispatch:       # Allow manual triggering
 
 jobs:
-  append-rate-info:
+  update-gist:
     runs-on: ubuntu-latest
-    steps:
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq curl
 
-      - name: Fetch GitHub tokens
+    steps:
+      - name: 🔐 Set up token & raw URLs
         run: |
-          curl -O https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/57fc9cc4a39f5b69aeefe4699bc155e176e2ae65/gistfile1.txt
-          mapfile -t TOKENS < gistfile1.txt
+          echo "GIST_ID=b3ad84ac92321f595b33d4b350938ffa" >> $GITHUB_ENV
+          echo "GIST_FILENAME=rate.json" >> $GITHUB_ENV
+          echo "TOKENS_URL=https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt" >> $GITHUB_ENV
+
+      - name: 🧪 Install jq
+        run: sudo apt-get install -y jq
+
+      - name: ⬇️ Fetch Tokens
+        run: |
+          curl -s $TOKENS_URL | grep ^ghp_ > tokens.txt
+          echo "Found $(wc -l < tokens.txt) tokens"
+
+      - name: 📥 Download Existing rate.json Gist Content
+        run: |
+          curl -s -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            https://api.github.com/gists/${{ env.GIST_ID }} \
+            | jq -r ".files[\"${{ env.GIST_FILENAME }}\"].content" > old_data.json
+
+          # Fallback if gist is empty or first time
+          if [ ! -s old_data.json ]; then echo "[]" > old_data.json; fi
+
+      - name: 📊 Generate New Rate Data
+        run: |
           echo "[" > new_entries.json
-          for TOKEN in "${TOKENS[@]}"; do
+          FIRST=true
+          while IFS= read -r TOKEN; do
             RESP=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/rate_limit)
             REMAINING=$(echo "$RESP" | jq '.rate.remaining')
             LIMIT=$(echo "$RESP" | jq '.rate.limit')
             RESET=$(echo "$RESP" | jq '.rate.reset')
             TIME=$(date -d @"$RESET" '+%Y-%m-%d %H:%M:%S')
             NOW=$(date '+%Y-%m-%d %H:%M:%S')
-            echo "  {\"time_checked\": \"$NOW\", \"token\": \"${TOKEN:0:10}...\", \"remaining\": $REMAINING, \"limit\": $LIMIT, \"reset\": \"$TIME\" }," >> new_entries.json
-          done
-          echo "{}]" >> new_entries.json
-          sed -i '$d' new_entries.json
 
-      - name: Download current Gist content
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+            ENTRY="{\"time_checked\": \"$NOW\", \"token\": \"${TOKEN:0:10}...\", \"remaining\": $REMAINING, \"limit\": $LIMIT, \"reset\": \"$TIME\"}"
+
+            if [ "$FIRST" = true ]; then
+              echo "  $ENTRY" >> new_entries.json
+              FIRST=false
+            else
+              echo "  ,$ENTRY" >> new_entries.json
+            fi
+          done < tokens.txt
+          echo "]" >> new_entries.json
+
+      - name: 🧪 Validate JSON
         run: |
-          curl -H "Authorization: token $GIST_TOKEN" \
-            https://api.github.com/gists/b3ad84ac92321f595b33d4b350938ffa \
-            | jq -r '.files["rate.json"].content' > old_data.json
+          jq empty new_entries.json || { echo "❌ Invalid JSON in new_entries.json"; cat new_entries.json; exit 1; }
 
-      - name: Combine with previous data
+      - name: 🔁 Merge with Old Data
         run: |
           jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
-      - name: Upload updated data to same Gist
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+      - name: 🚀 Push Updated Gist
         run: |
-          CONTENT=$(cat combined.json | jq -Rs .)
-          curl -X PATCH https://api.github.com/gists/b3ad84ac92321f595b33d4b350938ffa \
-            -H "Authorization: token $GIST_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"files\": {\"rate.json\": {\"content\": $CONTENT}}}"
+          UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
+            '{files: {($filename): {content: $content}}}')
 
-      - name: Sleep for 70 seconds to stay within safe limits
-        run: sleep 70
+          curl -s -X PATCH -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -d "$UPDATE_PAYLOAD" https://api.github.com/gists/${{ env.GIST_ID }}
