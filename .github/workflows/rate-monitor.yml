@@ -3,18 +3,19 @@ name: 🔄 GitHub Token Rate Tracker
 on:
   schedule:
     - cron: "*/2 * * * *"  # Every 2 minutes
-  workflow_dispatch:       # Allow manual triggering
+  workflow_dispatch:
 
 jobs:
   update-gist:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🔐 Set up token & raw URLs
+      - name: 🔐 Set up environment variables
         run: |
           echo "GIST_ID=b3ad84ac92321f595b33d4b350938ffa" >> $GITHUB_ENV
           echo "GIST_FILENAME=rate.json" >> $GITHUB_ENV
           echo "TOKENS_URL=https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt" >> $GITHUB_ENV
+          echo "OLD_DATA_RAW_URL=https://gist.githubusercontent.com/Preasx24/465a9bcaff40443a4c6b0572b7d5e99c/raw/8afd7e8edf7eb498f884134de6a891c644b3c61e/rate.json" >> $GITHUB_ENV
 
       - name: 🧪 Install jq
         run: sudo apt-get install -y jq
@@ -22,15 +23,11 @@ jobs:
       - name: ⬇️ Fetch Tokens
         run: |
           curl -s $TOKENS_URL | grep ^ghp_ > tokens.txt
-          echo "Found $(wc -l < tokens.txt) tokens"
+          echo "✅ Found $(wc -l < tokens.txt) tokens"
 
-      - name: 📥 Download Existing rate.json Gist Content
+      - name: 📥 Download Existing rate.json Content (no auth)
         run: |
-          curl -s -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
-            https://api.github.com/gists/${{ env.GIST_ID }} \
-            | jq -r ".files[\"${{ env.GIST_FILENAME }}\"].content" > old_data.json
-
-          # Fallback if gist is empty or first time
+          curl -s $OLD_DATA_RAW_URL > old_data.json
           [ ! -s old_data.json ] && echo "[]" > old_data.json
 
       - name: 📊 Generate New Rate Data
@@ -56,11 +53,11 @@ jobs:
           done < tokens.txt
           echo "]" >> new_entries.json
 
-      - name: 🧪 Validate JSON
+      - name: ✅ Validate JSON
         run: |
           jq empty new_entries.json || { echo "❌ Invalid JSON in new_entries.json"; cat new_entries.json; exit 1; }
 
-      - name: 🔁 Merge with Old Data
+      - name: 🔁 Merge Old + New Data
         run: |
           jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
