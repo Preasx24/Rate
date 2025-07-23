@@ -3,7 +3,7 @@ name: 🔄 GitHub Token Rate Tracker
 on:
   schedule:
     - cron: "*/2 * * * *"  # Every 2 minutes
-  workflow_dispatch:
+  workflow_dispatch:       # Allow manual triggering
 
 jobs:
   update-gist:
@@ -22,7 +22,7 @@ jobs:
       - name: ⬇️ Fetch Tokens
         run: |
           curl -s $TOKENS_URL | grep ^ghp_ > tokens.txt
-          echo "✅ Found $(wc -l < tokens.txt) tokens"
+          echo "Found $(wc -l < tokens.txt) tokens"
 
       - name: 📥 Download Existing rate.json Gist Content
         run: |
@@ -30,13 +30,13 @@ jobs:
             https://api.github.com/gists/${{ env.GIST_ID }} \
             | jq -r ".files[\"${{ env.GIST_FILENAME }}\"].content" > old_data.json
 
+          # Fallback if gist is empty or first time
           [ ! -s old_data.json ] && echo "[]" > old_data.json
 
       - name: 📊 Generate New Rate Data
         run: |
           echo "[" > new_entries.json
           FIRST=true
-
           while IFS= read -r TOKEN; do
             RESP=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/rate_limit)
             REMAINING=$(echo "$RESP" | jq '.rate.remaining')
@@ -56,11 +56,11 @@ jobs:
           done < tokens.txt
           echo "]" >> new_entries.json
 
-      - name: ✅ Validate JSON
+      - name: 🧪 Validate JSON
         run: |
           jq empty new_entries.json || { echo "❌ Invalid JSON in new_entries.json"; cat new_entries.json; exit 1; }
 
-      - name: 🔁 Merge Old + New
+      - name: 🔁 Merge with Old Data
         run: |
           jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
 
@@ -69,5 +69,5 @@ jobs:
           UPDATE_PAYLOAD=$(jq -n --arg filename "$GIST_FILENAME" --arg content "$(cat combined.json)" \
             '{files: {($filename): {content: $content}}}')
 
-          curl -s -X PATCH -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+          curl -s -X PATCH -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
             -d "$UPDATE_PAYLOAD" https://api.github.com/gists/${{ env.GIST_ID }}
