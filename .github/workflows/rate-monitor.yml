@@ -1,1 +1,55 @@
-h
+name: Append GitHub Token Rate Info to Gist
+
+on:
+  schedule:
+    - cron: "*/1 * * * *" # Runs every minute
+  workflow_dispatch:
+
+jobs:
+  append-rate-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+
+      - name: Fetch GitHub tokens
+        run: |
+          curl -O https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/57fc9cc4a39f5b69aeefe4699bc155e176e2ae65/gistfile1.txt
+          mapfile -t TOKENS < gistfile1.txt
+          echo "[" > new_entries.json
+          for TOKEN in "${TOKENS[@]}"; do
+            RESP=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/rate_limit)
+            REMAINING=$(echo "$RESP" | jq '.rate.remaining')
+            LIMIT=$(echo "$RESP" | jq '.rate.limit')
+            RESET=$(echo "$RESP" | jq '.rate.reset')
+            TIME=$(date -d @"$RESET" '+%Y-%m-%d %H:%M:%S')
+            NOW=$(date '+%Y-%m-%d %H:%M:%S')
+            echo "  {\"time_checked\": \"$NOW\", \"token\": \"${TOKEN:0:10}...\", \"remaining\": $REMAINING, \"limit\": $LIMIT, \"reset\": \"$TIME\" }," >> new_entries.json
+          done
+          echo "{}]" >> new_entries.json
+          sed -i '$d' new_entries.json
+
+      - name: Download current Gist content
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          curl -H "Authorization: token $GIST_TOKEN" \
+            https://api.github.com/gists/b3ad84ac92321f595b33d4b350938ffa \
+            | jq -r '.files["rate.json"].content' > old_data.json
+
+      - name: Combine with previous data
+        run: |
+          jq -s '.[0] + .[1]' old_data.json new_entries.json > combined.json
+
+      - name: Upload updated data to same Gist
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          CONTENT=$(cat combined.json | jq -Rs .)
+          curl -X PATCH https://api.github.com/gists/b3ad84ac92321f595b33d4b350938ffa \
+            -H "Authorization: token $GIST_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"files\": {\"rate.json\": {\"content\": $CONTENT}}}"
+
+      - name: Sleep for 70 seconds to stay within safe limits
+        run: sleep 70
