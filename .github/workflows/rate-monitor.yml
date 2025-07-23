@@ -25,10 +25,26 @@ jobs:
           curl -s $TOKENS_URL | grep ^ghp_ > tokens.txt
           echo "✅ Found $(wc -l < tokens.txt) tokens"
 
-      - name: 📥 Download Existing rate.json Content (no auth)
+      - name: 📥 Download Existing rate.json Content (safe)
         run: |
-          curl -s $OLD_DATA_RAW_URL > old_data.json
-          [ ! -s old_data.json ] && echo "[]" > old_data.json
+          echo "Downloading old_data.json from $OLD_DATA_RAW_URL"
+          set +e
+          curl -s $OLD_DATA_RAW_URL -o old_data.json
+          CURL_EXIT=$?
+          set -e
+
+          if [ $CURL_EXIT -ne 0 ]; then
+            echo "⚠️ curl exited with $CURL_EXIT"
+            echo "[]" > old_data.json
+          fi
+
+          if [ ! -s old_data.json ]; then
+            echo "old_data.json empty, initializing with []"
+            echo "[]" > old_data.json
+          else
+            echo "old_data.json downloaded successfully, first 20 bytes:"
+            head -c 20 old_data.json
+          fi
 
       - name: 📊 Generate New Rate Data
         run: |
