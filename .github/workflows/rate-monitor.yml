@@ -1,20 +1,7 @@
 name: GitHub Token Rate Tracker
 
 on:
-  schedule:
-    - cron: "*/2 * * * *"  # every 2 minutes
-  workflow_dispatch:
-
-jobs:
-  track:
-    runs-on: ubuntu-latest
-    env:
-      GIST_ID: baaadec8c55a20705b958950ae630b9f
-      GIST_FILENAME: rate.json
-      TOKENS_URL: https://gist.githubusercontent.com/Preasx24/137f29d4b3b32c251bf6b7ab2b3fae28/raw/gistfile1.txt
-      OLD_DATA_RAW_URL: https://gist.githubusercontent.com/Preasx24/baaadec8c55a20705b958950ae630b9f/raw/rate.json
-      MAX_HISTORY_ENTRIES: 100  # Keep last 100 entries to prevent unlimited growth
-
+  
     steps:
       - name: Checkout
         uses: actions/checkout@v4
